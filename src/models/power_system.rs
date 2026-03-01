@@ -37,12 +37,7 @@ impl PowerSystem {
             let phi = line.shift;
             let t = Complex::from_polar(a, phi);
 
-            // Standard model for transformer with tap on 'from' side
-            // Yff = (y_series + y_shunt) / |t|^2
-            // Ytt = y_series + y_shunt
-            // Yft = -y_series / t*
-            // Ytf = -y_series / t
-            
+            // Transformer model with tap on 'from' side
             ybus[[from_idx, from_idx]] += (y_series + y_shunt) / (a * a);
             ybus[[to_idx, to_idx]] += y_series + y_shunt;
             ybus[[from_idx, to_idx]] -= y_series / t.conj();
@@ -93,7 +88,7 @@ impl PowerSystem {
         let mut v = vec![0.0; n];
         let mut theta = vec![0.0; n];
 
-        // 1. Reconstruct V and Theta
+        // Reconstruct the full state from the solution vector
         let mut slack_idx = 0;
         for (i, bus) in self.buses.iter().enumerate() {
             if bus.bus_type == crate::enums::bustype::BusType::Slack {
@@ -104,14 +99,12 @@ impl PowerSystem {
         }
 
         let mut var_count = 0;
-        // Map theta unknowns
         for i in 0..n {
             if i != slack_idx {
                 theta[i] = x[[var_count, 0]];
                 var_count += 1;
             }
         }
-        // Map V unknowns
         for i in 0..n {
             if self.buses[i].bus_type == crate::enums::bustype::BusType::PQ {
                 v[i] = x[[var_count, 0]];
@@ -122,7 +115,6 @@ impl PowerSystem {
         println!("\nPower Flow Results");
         println!("==================");
         
-        // 2. Bus Results
         println!("\nBus Data:");
         println!("{:<5} {:<8} {:<8} {:<8} {:<10} {:<10} {:<10} {:<10}", "ID", "Type", "V (pu)", "Ang(rad)", "P Gen", "Q Gen", "P Load", "Q Load");
         println!("{}", "-".repeat(80));
@@ -158,7 +150,6 @@ impl PowerSystem {
             );
         }
 
-        // 3. Line Flows
         println!("\nLine Flows and Losses:");
         println!("{:<5} {:<5} {:<10} {:<10} {:<10} {:<10} {:<10} {:<10}", "From", "To", "P_ik", "Q_ik", "P_ki", "Q_ki", "P_loss", "Q_loss");
         println!("{}", "-".repeat(80));
@@ -174,13 +165,11 @@ impl PowerSystem {
             let y_series = 1.0 / line.z();
             let y_shunt = Complex::new(0.0, line.b / 2.0);
             let a = line.tap;
-            let phi = line.shift;
-            let t = Complex::from_polar(a, phi);
+            let t = Complex::from_polar(a, line.shift);
 
             let vi = Complex::from_polar(v[i], theta[i]);
             let vk = Complex::from_polar(v[k], theta[k]);
 
-            // Y-parameters for this specific line (Pi-model with transformer)
             let yii = (y_series + y_shunt) / (a * a);
             let ykk = y_series + y_shunt;
             let yik = -y_series / t.conj();
@@ -206,7 +195,6 @@ impl PowerSystem {
             );
         }
 
-        // 4. Totals
         println!("\nSystem Totals (pu):");
         println!("{}", "-".repeat(30));
         println!("{:<15} P: {:<10.4} Q: {:<10.4}", "Total Generation", total_p_gen, total_q_gen);
@@ -241,14 +229,12 @@ impl PowerSystem {
         let mut x = Array2::<f64>::zeros((var_count, 1));
         let mut current_var = 0;
 
-        // Theta initial values
         for i in 0..n {
             if i != slack_idx {
                 x[[current_var, 0]] = self.buses[i].theta;
                 current_var += 1;
             }
         }
-        // V initial values
         for i in 0..n {
             if bus_types[i] == crate::enums::bustype::BusType::PQ {
                 x[[current_var, 0]] = self.buses[i].v;
@@ -322,10 +308,14 @@ impl PowerSystem {
                 let mut fx = Array2::<f64>::zeros((var_count, 1));
                 let mut v = vec![0.0; n];
                 let mut theta = vec![0.0; n];
+                let mut cos_t = vec![0.0; n];
+                let mut sin_t = vec![0.0; n];
 
                 for i in 0..n {
                     v[i] = v_map[i].map_or(v_init[i], |idx| x[[idx, 0]]);
                     theta[i] = theta_map[i].map_or(theta_init[i], |idx| x[[idx, 0]]);
+                    cos_t[i] = theta[i].cos();
+                    sin_t[i] = theta[i].sin();
                 }
 
                 for i in 0..n {
@@ -333,8 +323,10 @@ impl PowerSystem {
 
                     let mut p_i = 0.0;
                     for k in 0..n {
-                        let theta_ik = theta[i] - theta[k];
-                        p_i += v[i] * v[k] * (g_bus[[i, k]] * theta_ik.cos() + b_bus[[i, k]] * theta_ik.sin());
+                        // Use trig identities to avoid expensive cos(theta_i - theta_k)
+                        let cos_ik = cos_t[i] * cos_t[k] + sin_t[i] * sin_t[k];
+                        let sin_ik = sin_t[i] * cos_t[k] - cos_t[i] * sin_t[k];
+                        p_i += v[i] * v[k] * (g_bus[[i, k]] * cos_ik + b_bus[[i, k]] * sin_ik);
                     }
                     if let Some(idx) = theta_map[i] {
                         fx[[idx, 0]] = p_i - p_spec[i];
@@ -343,8 +335,9 @@ impl PowerSystem {
                     if bus_types[i] == crate::enums::bustype::BusType::PQ {
                         let mut q_i = 0.0;
                         for k in 0..n {
-                            let theta_ik = theta[i] - theta[k];
-                            q_i += v[i] * v[k] * (g_bus[[i, k]] * theta_ik.sin() - b_bus[[i, k]] * theta_ik.cos());
+                            let cos_ik = cos_t[i] * cos_t[k] + sin_t[i] * sin_t[k];
+                            let sin_ik = sin_t[i] * cos_t[k] - cos_t[i] * sin_t[k];
+                            q_i += v[i] * v[k] * (g_bus[[i, k]] * sin_ik - b_bus[[i, k]] * cos_ik);
                         }
                         if let Some(idx) = v_map[i] {
                             fx[[idx, 0]] = q_i - q_spec[i];
@@ -367,19 +360,23 @@ impl PowerSystem {
                 let mut dfx = Array2::<f64>::zeros((var_count, var_count));
                 let mut v = vec![0.0; n];
                 let mut theta = vec![0.0; n];
+                let mut cos_t = vec![0.0; n];
+                let mut sin_t = vec![0.0; n];
 
                 for i in 0..n {
                     v[i] = v_map[i].map_or(v_init[i], |idx| x[[idx, 0]]);
                     theta[i] = theta_map[i].map_or(theta_init[i], |idx| x[[idx, 0]]);
+                    cos_t[i] = theta[i].cos();
+                    sin_t[i] = theta[i].sin();
                 }
 
+                // Pre-calculate P and Q to reuse in diagonal Jacobian elements
                 let mut p = vec![0.0; n];
                 let mut q = vec![0.0; n];
                 for i in 0..n {
                     for k in 0..n {
-                        let theta_ik = theta[i] - theta[k];
-                        let cos_ik = theta_ik.cos();
-                        let sin_ik = theta_ik.sin();
+                        let cos_ik = cos_t[i] * cos_t[k] + sin_t[i] * sin_t[k];
+                        let sin_ik = sin_t[i] * cos_t[k] - cos_t[i] * sin_t[k];
                         p[i] += v[i] * v[k] * (g_bus[[i, k]] * cos_ik + b_bus[[i, k]] * sin_ik);
                         q[i] += v[i] * v[k] * (g_bus[[i, k]] * sin_ik - b_bus[[i, k]] * cos_ik);
                     }
@@ -392,9 +389,8 @@ impl PowerSystem {
                     for k in 0..n {
                         let col_theta = theta_map[k];
                         let col_v = v_map[k];
-                        let theta_ik = theta[i] - theta[k];
-                        let cos_ik = theta_ik.cos();
-                        let sin_ik = theta_ik.sin();
+                        let cos_ik = cos_t[i] * cos_t[k] + sin_t[i] * sin_t[k];
+                        let sin_ik = sin_t[i] * cos_t[k] - cos_t[i] * sin_t[k];
 
                         if let (Some(rp), Some(ct)) = (row_p, col_theta) {
                             dfx[[rp, ct]] = if i == k {

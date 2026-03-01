@@ -1,7 +1,6 @@
 use ndarray::prelude::*;
-use ndarray_linalg::solve::Inverse;
+use ndarray_linalg::solve::Solve;
 
-// Generic Newton-Raphson solver
 pub struct NewtonRaphson {
     pub f: Box<dyn Fn(&Array2<f64>) -> Array2<f64>>,
     pub df: Box<dyn Fn(&Array2<f64>) -> Array2<f64>>,
@@ -27,35 +26,37 @@ impl NewtonRaphson {
     pub fn solve(&self, x: &mut Array2<f64>) -> bool {
         let mut err = 1.0e9;
         let mut current_iter = 0;
-        let mut x_old: Array2<f64>;
 
-        // Solving loop
+        // Loop until convergence or maximum iterations reached
         while err > self.tol && current_iter < self.max_iters {
-            x_old = x.clone();
+            let x_old = x.clone();
 
             let fx = (self.f)(x);
-            let dfx = (self.df)(x); // Jacobian
+            let dfx = (self.df)(x); 
 
-            // Inverse of Jacobian
-            let j_inv = match dfx.inv() {
-                Ok(inv) => inv,
+            // Convert fx to a 1D array as required by the solve method
+            let fx_1d = fx.clone().into_shape((fx.len(),)).unwrap();
+
+            // Solve J * delta_x = f(x) using LU decomposition
+            let step_1d = match dfx.solve(&fx_1d) {
+                Ok(s) => s,
                 Err(_) => {
-                    println!("Jacobian is singular!");
+                    println!("Solver failed: Jacobian is singular or ill-conditioned");
                     return false;
                 }
             };
 
-            // NR Step: x_new = x_old - J^-1 * f(x)
-            let step = j_inv.dot(&fx);
+            // Convert the 1D step back to a 2D column vector for updating x
+            let step = step_1d.into_shape((fx.len(), 1)).unwrap();
 
-            // Update x
+            // Update state with the calculated step
             *x -= &step;
 
-            // Calculate error
+            // Use the infinity norm (max absolute difference) to check convergence
             let diff = x.clone() - x_old;
             err = diff.mapv(f64::abs).fold(0.0, |a, b| a.max(*b));
             current_iter += 1;
-            println!("Iter {} Err {:.8}", current_iter, err);
+            println!("Iteration {} | Max Mismatch: {:.8}", current_iter, err);
         }
         
         err <= self.tol
