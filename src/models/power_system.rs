@@ -88,6 +88,133 @@ impl PowerSystem {
         self.buses.len()
     }
 
+    pub fn print_results(&self, x: &Array2<f64>) {
+        let n = self.n();
+        let mut v = vec![0.0; n];
+        let mut theta = vec![0.0; n];
+
+        // 1. Reconstruct V and Theta
+        let mut slack_idx = 0;
+        for (i, bus) in self.buses.iter().enumerate() {
+            if bus.bus_type == crate::enums::bustype::BusType::Slack {
+                slack_idx = i;
+            }
+            v[i] = bus.v;
+            theta[i] = bus.theta;
+        }
+
+        let mut var_count = 0;
+        // Map theta unknowns
+        for i in 0..n {
+            if i != slack_idx {
+                theta[i] = x[[var_count, 0]];
+                var_count += 1;
+            }
+        }
+        // Map V unknowns
+        for i in 0..n {
+            if self.buses[i].bus_type == crate::enums::bustype::BusType::PQ {
+                v[i] = x[[var_count, 0]];
+                var_count += 1;
+            }
+        }
+
+        println!("\nPower Flow Results");
+        println!("==================");
+        
+        // 2. Bus Results
+        println!("\nBus Data:");
+        println!("{:<5} {:<8} {:<8} {:<8} {:<10} {:<10} {:<10} {:<10}", "ID", "Type", "V (pu)", "Ang(rad)", "P Gen", "Q Gen", "P Load", "Q Load");
+        println!("{}", "-".repeat(80));
+
+        let g_bus = self.ybus.mapv(|y| y.re);
+        let b_bus = self.ybus.mapv(|y| y.im);
+
+        let mut total_p_gen = 0.0;
+        let mut total_q_gen = 0.0;
+        let mut total_p_load = 0.0;
+        let mut total_q_load = 0.0;
+
+        for i in 0..n {
+            let mut p_i = 0.0;
+            let mut q_i = 0.0;
+            for k in 0..n {
+                let theta_ik = theta[i] - theta[k];
+                p_i += v[i] * v[k] * (g_bus[[i, k]] * theta_ik.cos() + b_bus[[i, k]] * theta_ik.sin());
+                q_i += v[i] * v[k] * (g_bus[[i, k]] * theta_ik.sin() - b_bus[[i, k]] * theta_ik.cos());
+            }
+
+            let p_gen = p_i + self.buses[i].p_load;
+            let q_gen = q_i + self.buses[i].q_load;
+            
+            total_p_gen += p_gen;
+            total_q_gen += q_gen;
+            total_p_load += self.buses[i].p_load;
+            total_q_load += self.buses[i].q_load;
+
+            println!(
+                "{:<5} {:<8?} {:<8.4} {:<8.4} {:<10.4} {:<10.4} {:<10.4} {:<10.4}",
+                self.buses[i].id + 1, self.buses[i].bus_type, v[i], theta[i], p_gen, q_gen, self.buses[i].p_load, self.buses[i].q_load
+            );
+        }
+
+        // 3. Line Flows
+        println!("\nLine Flows and Losses:");
+        println!("{:<5} {:<5} {:<10} {:<10} {:<10} {:<10} {:<10} {:<10}", "From", "To", "P_ik", "Q_ik", "P_ki", "Q_ki", "P_loss", "Q_loss");
+        println!("{}", "-".repeat(80));
+
+        let mut total_p_loss = 0.0;
+        let mut total_q_loss = 0.0;
+
+        for line in &self.lines {
+            if !line.online { continue; }
+            let i = line.from;
+            let k = line.to;
+            
+            let y_series = 1.0 / line.z();
+            let y_shunt = Complex::new(0.0, line.b / 2.0);
+            let a = line.tap;
+            let phi = line.shift;
+            let t = Complex::from_polar(a, phi);
+
+            let vi = Complex::from_polar(v[i], theta[i]);
+            let vk = Complex::from_polar(v[k], theta[k]);
+
+            // Y-parameters for this specific line (Pi-model with transformer)
+            let yii = (y_series + y_shunt) / (a * a);
+            let ykk = y_series + y_shunt;
+            let yik = -y_series / t.conj();
+            let yki = -y_series / t;
+
+            let sik = vi * (yii * vi + yik * vk).conj();
+            let ski = vk * (yki * vi + ykk * vk).conj();
+
+            let p_ik = sik.re;
+            let q_ik = sik.im;
+            let p_ki = ski.re;
+            let q_ki = ski.im;
+
+            let p_loss = p_ik + p_ki;
+            let q_loss = q_ik + q_ki;
+
+            total_p_loss += p_loss;
+            total_q_loss += q_loss;
+
+            println!(
+                "{:<5} {:<5} {:<10.4} {:<10.4} {:<10.4} {:<10.4} {:<10.4} {:<10.4}",
+                i + 1, k + 1, p_ik, q_ik, p_ki, q_ki, p_loss, q_loss
+            );
+        }
+
+        // 4. Totals
+        println!("\nSystem Totals (pu):");
+        println!("{}", "-".repeat(30));
+        println!("{:<15} P: {:<10.4} Q: {:<10.4}", "Total Generation", total_p_gen, total_q_gen);
+        println!("{:<15} P: {:<10.4} Q: {:<10.4}", "Total Load", total_p_load, total_q_load);
+        println!("{:<15} P: {:<10.4} Q: {:<10.4}", "Total Losses", total_p_loss, total_q_loss);
+        println!("{}", "-".repeat(30));
+    }
+
     pub fn initial_x(&self) -> Array2<f64> {
         let n = self.n();
         let mut slack_idx = 0;

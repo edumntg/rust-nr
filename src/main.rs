@@ -21,7 +21,7 @@ fn main() {
     
     if solver.solve(&mut x) {
         println!("\nPower Flow Converged!");
-        println!("Final State Vector x:\n{:?}", x);
+        power_system.print_results(&x);
     } else {
         println!("\nPower Flow Failed to Converge.");
     }
