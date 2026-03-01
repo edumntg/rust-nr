@@ -52,6 +52,8 @@ pub fn load_ieee(filename: &str) -> PowerSystem {
                 let bus_num_str = get_slice(&line, 0, 4);
                 let name = get_slice(&line, 5, 17);
                 let bus_type_str = get_slice(&line, 24, 26);
+                let v_str = get_slice(&line, 26, 32);
+                let theta_str = get_slice(&line, 32, 40); // given as degrees most likely
                 let pl_str = get_slice(&line, 40, 49);
                 let ql_str = get_slice(&line, 49, 59);
                 let pgen_str = get_slice(&line, 59, 69);
@@ -64,11 +66,13 @@ pub fn load_ieee(filename: &str) -> PowerSystem {
                     _ => panic!("Unknown bus type code: {}", bus_type_str),
                 };
 
+                let bus_id: i32 = bus_num_str.parse().expect("Failed to parse bus id");
+                let theta: f64 = theta_str.parse().expect("Failed to parse theta");
                 let bus = Bus::new(
-                    bus_num_str.parse().unwrap(),
+                    bus_id - 1,
                     name.to_string(),
-                    1.0, // v
-                    0.0, // theta
+                    v_str.parse().unwrap_or(1.0), // v
+                    theta * std::f64::consts::PI / 180.0, // theta
                     pl_str.parse().unwrap_or(0.0),
                     ql_str.parse().unwrap_or(0.0),
                     pgen_str.parse().unwrap_or(0.0), // p_gen
@@ -86,9 +90,12 @@ pub fn load_ieee(filename: &str) -> PowerSystem {
                 let x_str = get_slice(&line, 29, 40);
                 let b_str = get_slice(&line, 40, 50);
 
+                let from_id: i32 = tap_bus_str.parse().expect("Failed to parse tap id");
+                let to_id: i32 = z_bus_str.parse().expect("Failed to parse z bus id");
+
                 let line_struct = Line::new(
-                    tap_bus_str.parse().unwrap(),
-                    z_bus_str.parse().unwrap(),
+                    from_id - 1,
+                    to_id - 1,
                     r_str.parse().unwrap(),
                     x_str.parse().unwrap(),
                     b_str.parse().unwrap(),
