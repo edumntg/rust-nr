@@ -116,8 +116,9 @@ impl PowerSystem {
         println!("==================");
         
         println!("\nBus Data:");
-        println!("{:<5} {:<8} {:<8} {:<8} {:<10} {:<10} {:<10} {:<10}", "ID", "Type", "V (pu)", "Ang(rad)", "P Gen", "Q Gen", "P Load", "Q Load");
-        println!("{}", "-".repeat(80));
+        println!("{:<4} {:^8} {:^10} {:^10} {:>12} {:>12} {:>12} {:>12}", 
+                 "ID", "Type", "V (pu)", "Ang(rad)", "P Gen", "Q Gen", "P Load", "Q Load");
+        println!("{}", "-".repeat(86));
 
         let g_bus = self.ybus.mapv(|y| y.re);
         let b_bus = self.ybus.mapv(|y| y.im);
@@ -144,15 +145,17 @@ impl PowerSystem {
             total_p_load += self.buses[i].p_load;
             total_q_load += self.buses[i].q_load;
 
+            let bus_type_str = format!("{:?}", self.buses[i].bus_type);
             println!(
-                "{:<5} {:<8?} {:<8.4} {:<8.4} {:<10.4} {:<10.4} {:<10.4} {:<10.4}",
-                self.buses[i].id + 1, self.buses[i].bus_type, v[i], theta[i], p_gen, q_gen, self.buses[i].p_load, self.buses[i].q_load
+                "{:<4} {:^8} {:^10.4} {:^10.4} {:>12.4} {:>12.4} {:>12.4} {:>12.4}",
+                self.buses[i].id + 1, bus_type_str, v[i], theta[i], p_gen, q_gen, self.buses[i].p_load, self.buses[i].q_load
             );
         }
 
         println!("\nLine Flows and Losses:");
-        println!("{:<5} {:<5} {:<10} {:<10} {:<10} {:<10} {:<10} {:<10}", "From", "To", "P_ik", "Q_ik", "P_ki", "Q_ki", "P_loss", "Q_loss");
-        println!("{}", "-".repeat(80));
+        println!("{:<5} {:<5} {:>12} {:>12} {:>12} {:>12} {:>12} {:>12}", 
+                 "From", "To", "P_ik", "Q_ik", "P_ki", "Q_ki", "P_loss", "Q_loss");
+        println!("{}", "-".repeat(90));
 
         let mut total_p_loss = 0.0;
         let mut total_q_loss = 0.0;
@@ -190,16 +193,16 @@ impl PowerSystem {
             total_q_loss += q_loss;
 
             println!(
-                "{:<5} {:<5} {:<10.4} {:<10.4} {:<10.4} {:<10.4} {:<10.4} {:<10.4}",
+                "{:<5} {:<5} {:>12.4} {:>12.4} {:>12.4} {:>12.4} {:>12.4} {:>12.4}",
                 i + 1, k + 1, p_ik, q_ik, p_ki, q_ki, p_loss, q_loss
             );
         }
 
         println!("\nSystem Totals (pu):");
         println!("{}", "-".repeat(30));
-        println!("{:<15} P: {:<10.4} Q: {:<10.4}", "Total Generation", total_p_gen, total_q_gen);
-        println!("{:<15} P: {:<10.4} Q: {:<10.4}", "Total Load", total_p_load, total_q_load);
-        println!("{:<15} P: {:<10.4} Q: {:<10.4}", "Total Losses", total_p_loss, total_q_loss);
+        println!("{:<15} P: {:>10.4} Q: {:>10.4}", "Total Generation", total_p_gen, total_q_gen);
+        println!("{:<15} P: {:>10.4} Q: {:>10.4}", "Total Load", total_p_load, total_q_load);
+        println!("{:<15} P: {:>10.4} Q: {:>10.4}", "Total Losses", total_p_loss, total_q_loss);
         println!("{}", "-".repeat(30));
     }
 
