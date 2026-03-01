@@ -1,8 +1,8 @@
 mod models;
 mod enums;
-mod data_loaders;
+mod loaders;
 
-use crate::data_loaders::load_ieee;
+use crate::loaders::data_loaders::load_ieee;
 use crate::models::power_system::PowerSystem;
 
 fn main() {
