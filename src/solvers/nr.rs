@@ -1,6 +1,12 @@
 use ndarray::prelude::*;
 use ndarray_linalg::solve::Solve;
 
+pub struct SolveStats {
+    pub converged: bool,
+    pub iterations: i32,
+    pub error: f64,
+}
+
 pub struct NewtonRaphson {
     pub f: Box<dyn Fn(&Array2<f64>) -> Array2<f64>>,
     pub df: Box<dyn Fn(&Array2<f64>) -> Array2<f64>>,
@@ -23,7 +29,7 @@ impl NewtonRaphson {
         }
     }
 
-    pub fn solve(&self, x: &mut Array2<f64>) -> bool {
+    pub fn solve(&self, x: &mut Array2<f64>) -> SolveStats {
         let mut err = 1.0e9;
         let mut current_iter = 0;
 
@@ -41,8 +47,11 @@ impl NewtonRaphson {
             let step_1d = match dfx.solve(&fx_1d) {
                 Ok(s) => s,
                 Err(_) => {
-                    println!("Solver failed: Jacobian is singular or ill-conditioned");
-                    return false;
+                    return SolveStats {
+                        converged: false,
+                        iterations: current_iter,
+                        error: err,
+                    };
                 }
             };
 
@@ -59,6 +68,10 @@ impl NewtonRaphson {
             println!("Iteration {} | Max Mismatch: {:.8}", current_iter, err);
         }
         
-        err <= self.tol
+        SolveStats {
+            converged: err <= self.tol,
+            iterations: current_iter,
+            error: err,
+        }
     }
 }
