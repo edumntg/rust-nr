@@ -9,3 +9,4 @@ ndarray-rand = "0.14"  # Extensions for random generation
 rand = "0.8"
 ndarray-linalg = { version = "0.16", features = ["openblas-system"] }
 # Note: You may need to install OpenBLAS on your computer first!
+num-complex = "0.4"
