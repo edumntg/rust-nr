@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use ndarray::Array2;
 use num_complex::{Complex, ComplexFloat};
 use crate::models::bus::Bus;
@@ -83,52 +84,228 @@ impl PowerSystem {
         println!("\nY-Bus Dimensions: {}x{}", self.ybus.nrows(), self.ybus.ncols());
     }
 
-    pub fn n(&self) -> i32 {
-        self.buses.len() as i32
+    pub fn n(&self) -> usize {
+        self.buses.len()
     }
 
-    pub fn prepare(&self) {
-        // This method will be used to set up all poer flow equations
-        // that will be later passed to the solver (i.e newton raphson)
+    pub fn initial_x(&self) -> Array2<f64> {
+        let n = self.n();
+        let mut slack_idx = 0;
+        let mut bus_types = Vec::new();
+        for (i, bus) in self.buses.iter().enumerate() {
+            bus_types.push(bus.bus_type);
+            if bus.bus_type == crate::enums::bustype::BusType::Slack {
+                slack_idx = i;
+            }
+        }
 
-        // Power flow equations
-        //  Pik = (-Bik + gi0)Vi^2 + Vi*Vk*(Gik*cos(thetai-thetak) + Bik*sin(thetai-thetak))
-        //  Qik = (Gik + bi0)Vi^2 - Vi*Vk*(Gik*sin(thetai-thetak) - Bik*cos(thetai-thetak))
+        let mut var_count = 0;
+        for i in 0..n {
+            if i != slack_idx {
+                var_count += 1;
+            }
+        }
+        for i in 0..n {
+            if bus_types[i] == crate::enums::bustype::BusType::PQ {
+                var_count += 1;
+            }
+        }
 
-        let n: i32 = self.buses.len() as i32; // size of system
+        let mut x = Array2::<f64>::zeros((var_count, 1));
+        let mut current_var = 0;
 
-        let Gik = self.ybus.mapv(|y| y.re); // Conductance matrix
-        let Bik = self.ybus.mapv(|y| y.im); // Susceptance matrix
+        // Theta initial values
+        for i in 0..n {
+            if i != slack_idx {
+                x[[current_var, 0]] = self.buses[i].theta;
+                current_var += 1;
+            }
+        }
+        // V initial values
+        for i in 0..n {
+            if bus_types[i] == crate::enums::bustype::BusType::PQ {
+                x[[current_var, 0]] = self.buses[i].v;
+                current_var += 1;
+            }
+        }
 
-        // Build f(x) and df(x). These equations will evaluate the power flow equations (and its derivative)
-        let f: fn(&Array2<f64>) -> Array2<f64> = |x: &Array2<f64>| {
-            // x is a vector of size 2n-1 (V1, V2, ..., Vn-1, theta2, theta3, ..., thetan)
-            let mut fx = Array2::<f64>::zeros((2*n - 1, 1));
+        x
+    }
 
-            for i in 0..n {
-                let Vi = x[[i as usize, 0]];
-                let thetai = if i == 0 { 0.0 } else { x[[(n + i - 1) as usize, 0]] };
+    pub fn prepare(&self) -> (Box<dyn Fn(&Array2<f64>) -> Array2<f64>>, Box<dyn Fn(&Array2<f64>) -> Array2<f64>>) {
+        let n = self.buses.len();
+        let g_bus = Arc::new(self.ybus.mapv(|y| y.re));
+        let b_bus = Arc::new(self.ybus.mapv(|y| y.im));
 
-                let mut Pi = 0.0;
-                let mut Qi = 0.0;
+        let mut slack_idx = 0;
+        let mut bus_types = Vec::new();
+        let mut p_spec = Vec::new();
+        let mut q_spec = Vec::new();
+        let mut v_init = Vec::new();
+        let mut theta_init = Vec::new();
 
-                for k in 0..n {
-                    let Vk = x[k as usize, 0];
-                    let thetak = if k == 0 { 0.0 } else { x[[(n + k - 1) as usize, 0]] };
+        for (i, bus) in self.buses.iter().enumerate() {
+            bus_types.push(bus.bus_type);
+            if bus.bus_type == crate::enums::bustype::BusType::Slack {
+                slack_idx = i;
+            }
+            p_spec.push(bus.p_gen - bus.p_load);
+            q_spec.push(bus.q_gen - bus.q_load);
+            v_init.push(bus.v);
+            theta_init.push(bus.theta);
+        }
 
-                    Pi += (-Bik[[i as usize, k as usize]] + Gik[[i as usize, k as usize]]) * Vi * Vi
-                        + Vi * Vk * (Gik[[i as usize, k as usize]] * (thetai - thetak).cos() + Bik[[i as usize, k as usize]] * (thetai - thetak).sin());
+        let mut theta_map = vec![None; n];
+        let mut v_map = vec![None; n];
+        let mut var_count = 0;
 
-                    Qi += (Gik[[i as usize, k as usize]] + Bik[[i as usize, k as usize]]) * Vi * Vi
-                        - Vi * Vk * (Gik[[i as usize, k as usize]] * (thetai - thetak).sin() - Bik[[i as usize, k as usize]] * (thetai - thetak).cos());
+        for i in 0..n {
+            if i != slack_idx {
+                theta_map[i] = Some(var_count);
+                var_count += 1;
+            }
+        }
+        for i in 0..n {
+            if bus_types[i] == crate::enums::bustype::BusType::PQ {
+                v_map[i] = Some(var_count);
+                var_count += 1;
+            }
+        }
+
+        let bus_types = Arc::new(bus_types);
+        let p_spec = Arc::new(p_spec);
+        let q_spec = Arc::new(q_spec);
+        let v_init = Arc::new(v_init);
+        let theta_init = Arc::new(theta_init);
+        let theta_map = Arc::new(theta_map);
+        let v_map = Arc::new(v_map);
+
+        let f = {
+            let g_bus = Arc::clone(&g_bus);
+            let b_bus = Arc::clone(&b_bus);
+            let p_spec = Arc::clone(&p_spec);
+            let q_spec = Arc::clone(&q_spec);
+            let v_init = Arc::clone(&v_init);
+            let theta_init = Arc::clone(&theta_init);
+            let bus_types = Arc::clone(&bus_types);
+            let theta_map = Arc::clone(&theta_map);
+            let v_map = Arc::clone(&v_map);
+            
+            move |x: &Array2<f64>| {
+                let mut fx = Array2::<f64>::zeros((var_count, 1));
+                let mut v = vec![0.0; n];
+                let mut theta = vec![0.0; n];
+
+                for i in 0..n {
+                    v[i] = v_map[i].map_or(v_init[i], |idx| x[[idx, 0]]);
+                    theta[i] = theta_map[i].map_or(theta_init[i], |idx| x[[idx, 0]]);
                 }
 
-                fx[[i as usize, 0]] = Pi - self.buses[i as usize].p_load + self.buses[i as usize].p_gen;
-                fx[[(n + i - 1) as usize, 0]] = Qi - self.buses[i as usize].q_load + self.buses[i as usize].q_gen;
-            }
+                for i in 0..n {
+                    if i == slack_idx { continue; }
 
-            fx
+                    let mut p_i = 0.0;
+                    for k in 0..n {
+                        let theta_ik = theta[i] - theta[k];
+                        p_i += v[i] * v[k] * (g_bus[[i, k]] * theta_ik.cos() + b_bus[[i, k]] * theta_ik.sin());
+                    }
+                    if let Some(idx) = theta_map[i] {
+                        fx[[idx, 0]] = p_i - p_spec[i];
+                    }
+
+                    if bus_types[i] == crate::enums::bustype::BusType::PQ {
+                        let mut q_i = 0.0;
+                        for k in 0..n {
+                            let theta_ik = theta[i] - theta[k];
+                            q_i += v[i] * v[k] * (g_bus[[i, k]] * theta_ik.sin() - b_bus[[i, k]] * theta_ik.cos());
+                        }
+                        if let Some(idx) = v_map[i] {
+                            fx[[idx, 0]] = q_i - q_spec[i];
+                        }
+                    }
+                }
+                fx
+            }
         };
 
+        let df = {
+            let g_bus = Arc::clone(&g_bus);
+            let b_bus = Arc::clone(&b_bus);
+            let v_init = Arc::clone(&v_init);
+            let theta_init = Arc::clone(&theta_init);
+            let theta_map = Arc::clone(&theta_map);
+            let v_map = Arc::clone(&v_map);
+
+            move |x: &Array2<f64>| {
+                let mut dfx = Array2::<f64>::zeros((var_count, var_count));
+                let mut v = vec![0.0; n];
+                let mut theta = vec![0.0; n];
+
+                for i in 0..n {
+                    v[i] = v_map[i].map_or(v_init[i], |idx| x[[idx, 0]]);
+                    theta[i] = theta_map[i].map_or(theta_init[i], |idx| x[[idx, 0]]);
+                }
+
+                let mut p = vec![0.0; n];
+                let mut q = vec![0.0; n];
+                for i in 0..n {
+                    for k in 0..n {
+                        let theta_ik = theta[i] - theta[k];
+                        let cos_ik = theta_ik.cos();
+                        let sin_ik = theta_ik.sin();
+                        p[i] += v[i] * v[k] * (g_bus[[i, k]] * cos_ik + b_bus[[i, k]] * sin_ik);
+                        q[i] += v[i] * v[k] * (g_bus[[i, k]] * sin_ik - b_bus[[i, k]] * cos_ik);
+                    }
+                }
+
+                for i in 0..n {
+                    let row_p = theta_map[i];
+                    let row_q = v_map[i];
+
+                    for k in 0..n {
+                        let col_theta = theta_map[k];
+                        let col_v = v_map[k];
+                        let theta_ik = theta[i] - theta[k];
+                        let cos_ik = theta_ik.cos();
+                        let sin_ik = theta_ik.sin();
+
+                        if let (Some(rp), Some(ct)) = (row_p, col_theta) {
+                            dfx[[rp, ct]] = if i == k {
+                                -q[i] - v[i] * v[i] * b_bus[[i, i]]
+                            } else {
+                                v[i] * v[k] * (g_bus[[i, k]] * sin_ik - b_bus[[i, k]] * cos_ik)
+                            };
+                        }
+
+                        if let (Some(rp), Some(cv)) = (row_p, col_v) {
+                            dfx[[rp, cv]] = if i == k {
+                                p[i] / v[i] + v[i] * g_bus[[i, i]]
+                            } else {
+                                v[i] * (g_bus[[i, k]] * cos_ik + b_bus[[i, k]] * sin_ik)
+                            };
+                        }
+
+                        if let (Some(rq), Some(ct)) = (row_q, col_theta) {
+                            dfx[[rq, ct]] = if i == k {
+                                p[i] - v[i] * v[i] * g_bus[[i, i]]
+                            } else {
+                                -v[i] * v[k] * (g_bus[[i, k]] * cos_ik + b_bus[[i, k]] * sin_ik)
+                            };
+                        }
+
+                        if let (Some(rq), Some(cv)) = (row_q, col_v) {
+                            dfx[[rq, cv]] = if i == k {
+                                q[i] / v[i] - v[i] * b_bus[[i, i]]
+                            } else {
+                                v[i] * (g_bus[[i, k]] * sin_ik - b_bus[[i, k]] * cos_ik)
+                            };
+                        }
+                    }
+                }
+                dfx
+            }
+        };
+
+        (Box::new(f), Box::new(df))
     }
 }
