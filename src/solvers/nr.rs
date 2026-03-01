@@ -53,7 +53,7 @@ impl NewtonRaphson {
 
             // Calculate error
             let diff = x.clone() - x_old;
-            err = diff.mapv(f64::abs).fold(0.0, |a, b| a.max(b));
+            err = diff.mapv(f64::abs).fold(0.0, |a, b| a.max(*b));
             current_iter += 1;
             println!("Iter {} Err {:.8}", current_iter, err);
         }
